@@ -1,0 +1,9 @@
+# Dependências existentes
+fpdf2
+python-dotenv
+groq
+
+# Novas dependências para Google Drive
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
