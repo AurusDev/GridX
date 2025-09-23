@@ -1,347 +1,301 @@
+# app.py (versão ajustada)
+
+import os
+import sys
+import math
+import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
 import customtkinter as ctk
-from tkinter import filedialog, messagebox, simpledialog, END, Listbox, MULTIPLE, ttk, PanedWindow
+from analisar import DataAnalyzer
 
-# ------------------------------------------------------------
-# Estado global
-# ------------------------------------------------------------
-df: pd.DataFrame | None = None
-excel_file: pd.ExcelFile | None = None
 
-# ------------------------------------------------------------
-# Aparência
-# ------------------------------------------------------------
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
-
-app = ctk.CTk()
-app.title("📊 Editor & Analisador de Planilhas — CustomTkinter")
-app.geometry("1400x850")
-
-# ------------------------------------------------------------
-# Utilidades
-# ------------------------------------------------------------
-def log(msg: str):
-    log_box.insert(END, msg + "\n")
-    log_box.see(END)
-
-def refresh_columns_listbox():
-    columns_listbox.delete(0, END)
-    if df is None:
-        return
+def strip_tz_inplace(df: pd.DataFrame):
     for col in df.columns:
-        dtype = str(df[col].dtype)
-        columns_listbox.insert(END, f"{col} — {dtype}")
+        if pd.api.types.is_datetime64tz_dtype(df[col]):
+            df[col] = df[col].dt.tz_localize(None)
 
-def selected_column_names():
-    if df is None:
-        return []
-    indices = list(columns_listbox.curselection())
-    names = []
-    for i in indices:
-        item = columns_listbox.get(i)
-        name = item.split(" — ")[0]
-        names.append(name)
-    return names
+def safe_to_excel(df: pd.DataFrame, path: str):
+    tmp = df.copy()
+    strip_tz_inplace(tmp)
+    tmp.to_excel(path, index=False)
 
-def update_preview(dataframe: pd.DataFrame):
-    """Atualiza o grid de preview com conteúdo do DataFrame"""
-    for item in preview_table.get_children():
-        preview_table.delete(item)
-    preview_table["columns"] = list(dataframe.columns)
-    preview_table["show"] = "headings"
+def safe_to_csv(df: pd.DataFrame, path: str):
+    tmp = df.copy()
+    strip_tz_inplace(tmp)
+    tmp.to_csv(path, index=False, encoding="utf-8-sig")
 
-    for col in dataframe.columns:
-        preview_table.heading(col, text=col)
-        preview_table.column(col, width=120, anchor="center")
+def auto_cast_series(s: pd.Series) -> pd.Series:
+    if pd.api.types.is_object_dtype(s):
+        s_dt = pd.to_datetime(s, errors="coerce", utc=False, infer_datetime_format=True)
+        if s_dt.notna().sum() > 0 and (s_dt.notna().mean() > 0.6):
+            return s_dt
+        s_num = pd.to_numeric(s.astype(str).str.replace(",", ".", regex=False), errors="coerce")
+        if s_num.notna().sum() > 0 and (s_num.notna().mean() > 0.6):
+            return s_num
+        return s.astype("string")
+    return s
 
-    for _, row in dataframe.head(100).iterrows():
-        preview_table.insert("", "end", values=list(row))
 
-    # Atualiza rodapé
-    update_footer(dataframe)
+class GridXApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("green")
+        self.title("🧰 GridX — Editor & Analizador de Planilhas")
+        self.geometry("1280x720")
 
-def update_footer(dataframe: pd.DataFrame | None):
-    """Atualiza contador de linhas, colunas e nulos"""
-    if dataframe is None:
-        shape_label.configure(text="Linhas: 0 | Colunas: 0 | Nulos: 0")
-    else:
-        nulos = int(dataframe.isna().sum().sum())
-        shape_label.configure(
-            text=f"Linhas: {dataframe.shape[0]} | Colunas: {dataframe.shape[1]} | Nulos: {nulos}"
-        )
+        self.df = None
+        self.filepath = None
+        self.sheets = []
+        self.current_sheet = None
+        self.analyzer = DataAnalyzer(self.log)
 
-# ------------------------------------------------------------
-# Tipagem automática
-# ------------------------------------------------------------
-def _try_numeric(col: pd.Series) -> pd.Series:
-    return pd.to_numeric(col, errors="ignore")
+        self._build_ui()
 
-def _try_datetime(col: pd.Series) -> pd.Series:
-    if pd.api.types.is_numeric_dtype(col):
-        return col
-    return pd.to_datetime(col, errors="ignore", infer_datetime_format=True)
+    def _build_ui(self):
+        # ---------------- TOPO ----------------
+        top = ctk.CTkFrame(self)
+        top.pack(fill="x", padx=8, pady=6)
 
-def auto_infer_types(df_in: pd.DataFrame) -> pd.DataFrame:
-    out = df_in.copy()
-    for c in out.columns:
-        original = out[c].dtype
-        tmp = _try_numeric(out[c])
-        tmp2 = _try_datetime(tmp)
-        out[c] = tmp2
-        new = out[c].dtype
-        if new != original:
-            log(f"🔎 '{c}' convertido de {original} → {new}")
-    return out
+        ctk.CTkButton(top, text="📂 Carregar", command=self.on_load).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="💾 Salvar", command=self.on_save).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="🧹 Limpar Log", command=self.clear_log).pack(side="left", padx=4)
+        ctk.CTkButton(top, text="🔄 Descarregar", command=self.on_reset).pack(side="left", padx=4)
 
-# ------------------------------------------------------------
-# Excel-safe helper
-# ------------------------------------------------------------
-def make_excel_safe(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    for col in out.columns:
-        if pd.api.types.is_datetime64_dtype(out[col]) or pd.api.types.is_datetime64tz_dtype(out[col]):
-            try:
-                out[col] = out[col].dt.tz_localize(None)
-            except Exception:
-                out[col] = pd.to_datetime(out[col], errors="coerce").dt.tz_localize(None)
-    return out
+        ctk.CTkLabel(top, text="Aba:").pack(side="left", padx=(16, 4))
+        self.sheet_combo = ctk.CTkComboBox(top, values=[], command=self.on_select_sheet, width=240)
+        self.sheet_combo.pack(side="left", padx=4)
 
-# ------------------------------------------------------------
-# Ações principais
-# ------------------------------------------------------------
-def carregar_arquivo():
-    global excel_file, df
-    path = filedialog.askopenfilename(
-        title="Selecione a planilha",
-        filetypes=[("Excel", "*.xlsx *.xls"), ("CSV", "*.csv")]
-    )
-    if not path:
-        return
-    try:
-        if path.lower().endswith(".csv"):
-            df = pd.read_csv(path)
-            excel_file = None
-            df = auto_infer_types(df)
-            update_preview(df)
-            refresh_columns_listbox()
-            log("✅ Arquivo CSV carregado com sucesso!")
-        else:
-            excel_file = pd.ExcelFile(path)
-            sheet_combo.configure(values=excel_file.sheet_names)
-            sheet_combo.set(excel_file.sheet_names[0])
-            carregar_aba(excel_file.sheet_names[0])
-            log(f"✅ Arquivo Excel carregado. Abas encontradas: {excel_file.sheet_names}")
-    except Exception as e:
-        messagebox.showerror("Erro ao carregar", str(e))
+        # ---------------- PAINEL PRINCIPAL ----------------
+        main_paned = ttk.Panedwindow(self, orient="vertical")
+        main_paned.pack(fill="both", expand=True, padx=8, pady=8)
 
-def carregar_aba(sheet_name):
-    global df
-    if excel_file is None:
-        return
-    df = excel_file.parse(sheet_name)
-    df = auto_infer_types(df)
-    refresh_columns_listbox()
-    update_preview(df)
-    log(f"📄 Aba '{sheet_name}' carregada com sucesso!")
+        # Parte de cima (colunas + dados)
+        top_frame = ttk.Panedwindow(main_paned, orient="horizontal")
+        main_paned.add(top_frame, weight=4)
 
-def salvar_arquivo():
-    if df is None:
-        messagebox.showwarning("Aviso", "Nenhum arquivo para salvar!")
-        return
-    path = filedialog.asksaveasfilename(
-        defaultextension=".xlsx",
-        filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv")]
-    )
-    if not path:
-        return
-    try:
-        df_to_save = make_excel_safe(df)
-        if path.lower().endswith(".csv"):
-            df_to_save.to_csv(path, index=False)
-        else:
-            df_to_save.to_excel(path, index=False)
-        log(f"💾 Arquivo salvo em: {path}")
-        messagebox.showinfo("Sucesso", "Arquivo salvo com sucesso!")
-    except Exception as e:
-        messagebox.showerror("Erro ao salvar", str(e))
+        # Lateral esquerda (colunas + botões)
+        left = ctk.CTkFrame(top_frame, width=260)
+        left.pack_propagate(False)
+        top_frame.add(left, weight=1)
 
-# ------------------------------------------------------------
-# Funções de edição
-# ------------------------------------------------------------
-def adicionar_coluna():
-    global df
-    if df is None:
-        return
-    nome = simpledialog.askstring("Adicionar coluna", "Nome da nova coluna:")
-    if not nome:
-        return
-    if nome in df.columns:
-        messagebox.showwarning("Aviso", "Já existe uma coluna com esse nome.")
-        return
-    default_value = simpledialog.askstring("Valor padrão (opcional)", "Deixe em branco para NaN:")
-    df[nome] = default_value if (default_value not in [None, ""]) else pd.NA
-    log(f"➕ Coluna adicionada: '{nome}'")
-    refresh_columns_listbox()
-    update_preview(df)
+        ctk.CTkLabel(left, text="📑 Colunas (multiseleção)").pack(pady=(6, 4))
+        self.columns_list = tk.Listbox(left, selectmode="extended", exportselection=False)
+        self.columns_list.pack(fill="both", expand=True, padx=6, pady=(0, 8))
 
-def deletar_colunas():
-    global df
-    if df is None:
-        return
-    cols = selected_column_names()
-    if not cols:
-        return
-    df.drop(columns=cols, inplace=True)
-    log(f"🗑️ Colunas deletadas: {', '.join(cols)}")
-    refresh_columns_listbox()
-    update_preview(df)
+        # Botões originais
+        ctk.CTkButton(left, text="➕ Adicionar Coluna", command=self.add_column).pack(fill="x", padx=6, pady=2)
+        ctk.CTkButton(left, text="✏️ Renomear Coluna(s)", command=self.rename_columns).pack(fill="x", padx=6, pady=2)
+        ctk.CTkButton(left, text="🗑️ Deletar Coluna(s)", command=self.delete_columns).pack(fill="x", padx=6, pady=2)
+        ctk.CTkButton(left, text="🔀 Alterar Tipo", command=self.change_dtype).pack(fill="x", padx=6, pady=2)
+        ctk.CTkButton(left, text="📈 Analisar", command=self.open_analysis_menu).pack(fill="x", padx=6, pady=(10, 8))
 
-def renomear_colunas():
-    global df
-    if df is None:
-        return
-    cols = selected_column_names()
-    if not cols:
-        return
-    mapping = {}
-    for c in cols:
-        novo = simpledialog.askstring("Renomear", f"Novo nome para '{c}':")
-        if not novo:
-            continue
-        mapping[c] = novo
-    if mapping:
-        df.rename(columns=mapping, inplace=True)
-        log(f"✏️ Renomeadas: {mapping}")
-        refresh_columns_listbox()
-        update_preview(df)
+        # Centro (Treeview com dados)
+        center = ctk.CTkFrame(top_frame)
+        top_frame.add(center, weight=4)
 
-def alterar_tipo_colunas():
-    global df
-    if df is None:
-        return
-    cols = selected_column_names()
-    if not cols:
-        return
-    tipo = simpledialog.askstring("Alterar tipo", "Digite o tipo (string, int, float, datetime, bool):")
-    ok, fail = [], []
-    for c in cols:
+        self.tree = ttk.Treeview(center, show="headings")
+        self.tree.pack(fill="both", expand=True, padx=6, pady=6)
+
+        # Parte de baixo (log aumentável)
+        bottom = ctk.CTkFrame(main_paned)
+        main_paned.add(bottom, weight=1)
+
+        ctk.CTkLabel(bottom, text="📝 Log").pack(anchor="w", padx=6)
+        self.log_text = tk.Text(bottom, height=8, bg="#111", fg="#ddd")
+        self.log_text.pack(fill="both", expand=True, padx=6, pady=6)
+
+    # --------- FUNÇÕES AUXILIARES ----------
+    def log(self, msg: str):
+        self.log_text.insert("end", str(msg) + "\n")
+        self.log_text.see("end")
+
+    def clear_log(self):
+        self.log_text.delete("1.0", "end")
+        self.log("🧹 Log limpo.")
+
+    def _refresh_columns_list(self):
+        self.columns_list.delete(0, "end")
+        if self.df is not None:
+            for col in self.df.columns:
+                self.columns_list.insert("end", f"{col} — {self.df[col].dtype}")
+
+    def _rebuild_tree(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        self.tree["columns"] = []
+        if self.df is None or self.df.empty:
+            return
+        self.tree["columns"] = list(self.df.columns)
+        for col in self.df.columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=120, anchor="w")
+        for _, row in self.df.head(200).iterrows():
+            self.tree.insert("", "end", values=list(row))
+
+    # --------- BOTÕES ORIGINAIS ----------
+    def add_column(self):
+        if self.df is not None:
+            self.df["NovaColuna"] = np.nan
+            self._refresh_columns_list()
+            self._rebuild_tree()
+            self.log("➕ Coluna adicionada.")
+
+    def rename_columns(self):
+        sel = self.columns_list.curselection()
+        if not sel:
+            return
+        new_name = simple_input("Novo nome da coluna:")
+        if new_name:
+            col_index = sel[0]
+            old_name = self.df.columns[col_index]
+            self.df.rename(columns={old_name: new_name}, inplace=True)
+            self._refresh_columns_list()
+            self._rebuild_tree()
+            self.log(f"✏️ Coluna renomeada: {old_name} → {new_name}")
+
+    def delete_columns(self):
+        sel = self.columns_list.curselection()
+        if not sel:
+            return
+        cols_to_delete = [self.df.columns[i] for i in sel]
+        self.df.drop(columns=cols_to_delete, inplace=True)
+        self._refresh_columns_list()
+        self._rebuild_tree()
+        self.log(f"🗑️ Colunas deletadas: {cols_to_delete}")
+
+    def change_dtype(self):
+        sel = self.columns_list.curselection()
+        if not sel:
+            return
+        col = self.df.columns[sel[0]]
         try:
-            if tipo == "string":
-                df[c] = df[c].astype("string")
-            elif tipo == "int":
-                df[c] = pd.to_numeric(df[c], errors="raise").astype("Int64")
-            elif tipo == "float":
-                df[c] = pd.to_numeric(df[c], errors="raise").astype("Float64")
-            elif tipo == "datetime":
-                df[c] = pd.to_datetime(df[c], errors="raise", infer_datetime_format=True).dt.tz_localize(None)
-            elif tipo == "bool":
-                df[c] = df[c].astype("string").str.strip().str.lower().map(
-                    {"true": True, "false": False, "1": True, "0": False, "sim": True, "não": False, "nao": False}
-                )
-            ok.append(c)
+            self.df[col] = pd.to_numeric(self.df[col], errors="coerce")
+            self._refresh_columns_list()
+            self.log(f"🔀 Tipo de coluna alterado: {col} → numérico")
         except Exception as e:
-            fail.append(f"{c} ({e})")
-    if ok:
-        log(f"🔁 Tipo aplicado '{tipo}' em: {', '.join(ok)}")
-    if fail:
-        log(f"⚠️ Falha em: {', '.join(fail)}")
-    refresh_columns_listbox()
-    update_preview(df)
+            messagebox.showerror("Erro", str(e))
 
-def resetar_log():
-    global df, excel_file
-    log_box.delete("1.0", END)
-    df = None
-    excel_file = None
+    # --------- ANÁLISE ----------
+    def open_analysis_menu(self):
+        if self.df is None:
+            messagebox.showinfo("Info", "Carregue um arquivo primeiro.")
+            return
+        win = ctk.CTkToplevel(self)
+        win.title("📈 Análises")
+        win.geometry("380x420")
+        win.grab_set()
+        win.focus_force()
+        win.lift()
 
-    # Limpa listbox
-    columns_listbox.delete(0, END)
+        ctk.CTkLabel(win, text="Escolha uma análise").pack(pady=(10, 6))
+        ctk.CTkButton(win, text="Resumo Geral", command=lambda: self.analyzer.summary(self.df)).pack(fill="x", padx=12, pady=4)
+        ctk.CTkButton(win, text="Correlação", command=lambda: self.analyzer.plot_correlation(self.df)).pack(fill="x", padx=12, pady=4)
+        ctk.CTkButton(win, text="Missing", command=lambda: self.analyzer.plot_missing(self.df)).pack(fill="x", padx=12, pady=4)
+        ctk.CTkButton(win, text="Duplicados", command=lambda: self.analyzer.detect_duplicates(self.df)).pack(fill="x", padx=12, pady=4)
+        ctk.CTkButton(win, text="Outliers", command=lambda: self.analyzer.detect_outliers_iqr(self.df)).pack(fill="x", padx=12, pady=4)
+        ctk.CTkButton(win, text="Série temporal", command=lambda: self.analyzer.plot_time_series(self.df)).pack(fill="x", padx=12, pady=4)
+        ctk.CTkButton(win, text="Fechar", fg_color="#333", command=win.destroy).pack(pady=10)
 
-    # Limpa grid
-    for item in preview_table.get_children():
-        preview_table.delete(item)
-    preview_table["columns"] = []
+    # --------- CARREGAR/SALVAR ----------
+    def on_load(self):
+        path = filedialog.askopenfilename(
+            title="Selecione a planilha",
+            filetypes=[("Planilhas Excel", "*.xlsx *.xls"), ("Arquivos CSV", "*.csv")]
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".csv"):
+                df = pd.read_csv(path)
+                self.sheets = ["__csv__"]
+            else:
+                xls = pd.ExcelFile(path)
+                self.sheets = xls.sheet_names
+                df = pd.read_excel(path, sheet_name=self.sheets[0])
 
-    # Reseta ComboBox
-    sheet_combo.set("")
-    sheet_combo.configure(values=[])
+            df = df.apply(auto_cast_series)
+            self.filepath = path
+            self.df = df
+            self.current_sheet = self.sheets[0]
 
-    # Reset rodapé
-    update_footer(None)
+            self.sheet_combo.configure(values=self.sheets)
+            self.sheet_combo.set(self.current_sheet)
 
-    log("🧹 Reset: aplicação limpa.")
+            self._refresh_columns_list()
+            self._rebuild_tree()
+            self.clear_log()
+            self.log("✔ Arquivo carregado.")
+            self.log(f"Aba(s) encontrada(s): {self.sheets}")
+        except Exception as e:
+            messagebox.showerror("Erro ao carregar", str(e))
 
-# ------------------------------------------------------------
-# Layout
-# ------------------------------------------------------------
-top_frame = ctk.CTkFrame(app)
-top_frame.pack(fill="x", padx=16, pady=12)
+    def on_select_sheet(self, value):
+        if not self.filepath or value == "__csv__":
+            return
+        try:
+            self.current_sheet = value
+            df = pd.read_excel(self.filepath, sheet_name=value)
+            df = df.apply(auto_cast_series)
+            self.df = df
 
-btn_load = ctk.CTkButton(top_frame, text="📂 Carregar", command=carregar_arquivo)
-btn_save = ctk.CTkButton(top_frame, text="💾 Salvar", command=salvar_arquivo)
-btn_reset = ctk.CTkButton(top_frame, text="🧹 Limpar Log", command=resetar_log)
+            self._refresh_columns_list()
+            self._rebuild_tree()
+            self.log(f"✔ Aba '{value}' carregada.")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha ao trocar de aba: {e}")
 
-btn_load.pack(side="left", padx=6)
-btn_save.pack(side="left", padx=6)
-btn_reset.pack(side="left", padx=6)
+    def on_save(self):
+        if self.df is None:
+            messagebox.showwarning("Aviso", "Nenhum dataframe para salvar.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx"), ("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".csv"):
+                safe_to_csv(self.df, path)
+            else:
+                safe_to_excel(self.df, path)
+            self.log(f"💾 Arquivo salvo em: {path}")
+        except Exception as e:
+            messagebox.showerror("Erro ao salvar", str(e))
 
-sheet_combo = ctk.CTkComboBox(top_frame, values=[], command=carregar_aba)
-sheet_combo.pack(side="left", padx=6)
+    def on_reset(self):
+        self.df = None
+        self.filepath = None
+        self.sheets = []
+        self.current_sheet = None
+        self.sheet_combo.configure(values=[])
+        self.sheet_combo.set("")
+        self.columns_list.delete(0, "end")
+        self._rebuild_tree()
+        self.clear_log()
+        self.log("🔄 Aplicação descarregada.")
 
-body = ctk.CTkFrame(app)
-body.pack(fill="both", expand=True, padx=16, pady=8)
 
-# Lado esquerdo: listbox
-left = ctk.CTkFrame(body)
-left.pack(side="left", fill="y", padx=(0,12), pady=4)
+# Helper simples para input
+def simple_input(prompt):
+    top = tk.Toplevel()
+    top.title("Input")
+    tk.Label(top, text=prompt).pack(padx=10, pady=10)
+    entry = tk.Entry(top)
+    entry.pack(padx=10, pady=10)
+    entry.focus_set()
+    value = {}
 
-ctk.CTkLabel(left, text="📋 Colunas (multiseleção)").pack(padx=8, pady=(8,4))
-columns_listbox = Listbox(left, selectmode=MULTIPLE, width=38, height=18)
-columns_listbox.pack(padx=8, pady=4)
+    def confirm():
+        value["text"] = entry.get()
+        top.destroy()
 
-btn_add = ctk.CTkButton(left, text="➕ Adicionar Coluna", command=adicionar_coluna)
-btn_rename = ctk.CTkButton(left, text="✏️ Renomear Coluna(s)", command=renomear_colunas)
-btn_delete = ctk.CTkButton(left, text="🗑️ Deletar Coluna(s)", command=deletar_colunas)
-btn_type = ctk.CTkButton(left, text="🧬 Alterar Tipo", command=alterar_tipo_colunas)
+    tk.Button(top, text="OK", command=confirm).pack(pady=10)
+    top.wait_window()
+    return value.get("text")
 
-btn_add.pack(fill="x", padx=8, pady=6)
-btn_rename.pack(fill="x", padx=8, pady=6)
-btn_delete.pack(fill="x", padx=8, pady=6)
-btn_type.pack(fill="x", padx=8, pady=6)
 
-# Área central: PanedWindow
-paned = PanedWindow(body, orient="vertical")
-paned.pack(fill="both", expand=True, side="left")
-
-# Grid
-preview_frame = ctk.CTkFrame(paned)
-preview_table = ttk.Treeview(preview_frame)
-preview_table.pack(fill="both", expand=True, side="left")
-
-scroll_y = ttk.Scrollbar(preview_frame, orient="vertical", command=preview_table.yview)
-scroll_y.pack(side="right", fill="y")
-preview_table.configure(yscroll=scroll_y.set)
-
-scroll_x = ttk.Scrollbar(preview_frame, orient="horizontal", command=preview_table.xview)
-scroll_x.pack(side="bottom", fill="x")
-preview_table.configure(xscroll=scroll_x.set)
-
-# Log
-log_frame = ctk.CTkFrame(paned)
-log_box = ctk.CTkTextbox(log_frame)
-log_box.pack(fill="both", expand=True)
-
-# Adiciona ao paned
-paned.add(preview_frame, stretch="always")
-paned.add(log_frame, stretch="always")
-
-# Rodapé fixo
-footer_frame = ctk.CTkFrame(app)
-footer_frame.pack(fill="x", padx=16, pady=(0,8), side="bottom")
-shape_label = ctk.CTkLabel(footer_frame, text="Linhas: 0 | Colunas: 0 | Nulos: 0", anchor="e")
-shape_label.pack(anchor="e", padx=10)
-
-log("👋 Bem-vindo! Carregue um arquivo para começar.")
-app.mainloop()
+if __name__ == "__main__":
+    app = GridXApp()
+    app.mainloop()
