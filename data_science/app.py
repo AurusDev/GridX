@@ -1,4 +1,4 @@
-# app.py (versão ajustada)
+# app.py (versão 1.0.3)
 
 import os
 import sys
@@ -17,15 +17,18 @@ def strip_tz_inplace(df: pd.DataFrame):
         if pd.api.types.is_datetime64tz_dtype(df[col]):
             df[col] = df[col].dt.tz_localize(None)
 
+
 def safe_to_excel(df: pd.DataFrame, path: str):
     tmp = df.copy()
     strip_tz_inplace(tmp)
     tmp.to_excel(path, index=False)
 
+
 def safe_to_csv(df: pd.DataFrame, path: str):
     tmp = df.copy()
     strip_tz_inplace(tmp)
     tmp.to_csv(path, index=False, encoding="utf-8-sig")
+
 
 def auto_cast_series(s: pd.Series) -> pd.Series:
     if pd.api.types.is_object_dtype(s):
@@ -170,14 +173,41 @@ class GridXApp(ctk.CTk):
     def change_dtype(self):
         sel = self.columns_list.curselection()
         if not sel:
+            messagebox.showinfo("Info", "Selecione pelo menos uma coluna.")
             return
+
         col = self.df.columns[sel[0]]
-        try:
-            self.df[col] = pd.to_numeric(self.df[col], errors="coerce")
-            self._refresh_columns_list()
-            self.log(f"🔀 Tipo de coluna alterado: {col} → numérico")
-        except Exception as e:
-            messagebox.showerror("Erro", str(e))
+
+        # Nova janela para escolher tipo
+        win = ctk.CTkToplevel(self)
+        win.title(f"Alterar Tipo — {col}")
+        win.geometry("300x160")
+        win.grab_set()
+        win.focus_force()
+
+        ctk.CTkLabel(win, text=f"Escolha o novo tipo para '{col}':").pack(pady=10)
+
+        type_options = ["string", "int64", "float64", "datetime"]
+        type_var = ctk.StringVar(value="string")
+
+        combo = ctk.CTkComboBox(win, values=type_options, variable=type_var)
+        combo.pack(pady=10)
+
+        def apply_change():
+            new_type = type_var.get()
+            try:
+                if new_type == "datetime":
+                    self.df[col] = pd.to_datetime(self.df[col], errors="coerce")
+                else:
+                    self.df[col] = self.df[col].astype(new_type)
+                self._refresh_columns_list()
+                self._rebuild_tree()
+                self.log(f"🔀 Tipo da coluna '{col}' alterado para {new_type}.")
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível alterar: {e}")
+
+        ctk.CTkButton(win, text="Aplicar", command=apply_change).pack(pady=10)
 
     # --------- ANÁLISE ----------
     def open_analysis_menu(self):

@@ -4,7 +4,7 @@
 
 ; --------- METADADOS ---------
 #define MyAppName "GridX"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Arthur Dev Labs"
 #define MyAppExeName "GridX.exe"
 #define MyAppId "{{5CF6B0B2-8A73-4A5A-94A4-9B4A2E9C9E10}}"
