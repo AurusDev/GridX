@@ -1,6 +1,6 @@
 # 🧰 GridX — Editor & Analizador de Planilhas
 
-[![Release](https://img.shields.io/github/v/release/AurusDev/GridX?color=brightgreen&label=download)](https://github.com/AurusDev/GridX/releases/latest)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/AurusDev/GridX)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/AurusDev/GridX/blob/main/LICENSE)
 [![Build](https://img.shields.io/badge/build-passing-success.svg)]()
 
