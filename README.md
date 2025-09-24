@@ -1,6 +1,8 @@
 # 🧰 GridX — Editor & Analizador de Planilhas
 
 [![Release](https://img.shields.io/github/v/release/AurusDev/GridX?color=brightgreen&label=download)](https://github.com/AurusDev/GridX/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/AurusDev/GridX/blob/main/LICENSE)
+[![Build](https://img.shields.io/badge/build-passing-success.svg)]()
 
 Seu conversor e analisador inteligente de planilhas para Windows.  
 Transforme dados em insights de forma rápida, simples e eficiente.  
@@ -21,7 +23,8 @@ Transforme dados em insights de forma rápida, simples e eficiente.
 
 ---
 
-## 📸 Screenshot
-![screenshot](docs/screenshot.png) <!-- opcional, se quiser mostrar print -->
+## 📖 Licença
+Este projeto está licenciado sob a [MIT License](https://github.com/AurusDev/GridX/blob/main/LICENSE).
 
+---
 
